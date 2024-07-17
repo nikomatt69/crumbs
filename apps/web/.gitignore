@@ -1,0 +1,7 @@
+src/locales/**/*.js
+.vercel
+.env.production
+.env
+certificates
+# Million Lint
+.million

@@ -1,0 +1,660 @@
+import QuotedPublication from '@components/Publication/QuotedPublication';
+import { AudioPublicationSchema } from '@components/Shared/Audio';
+import Wrapper from '@components/Shared/Embed/Wrapper';
+import EmojiPicker from '@components/Shared/EmojiPicker';
+import withLexicalContext from '@components/Shared/Lexical/withLexicalContext';
+import NewAttachments from '@components/Shared/NewAttachments';
+import {
+  ChatBubbleOvalLeftEllipsisIcon,
+  PencilSquareIcon
+} from '@heroicons/react/24/outline';
+import { Errors } from '@lensshare/data/errors';
+import { PUBLICATION } from '@lensshare/data/tracking';
+import type {
+  MirrorablePublication,
+  MomokaCommentRequest,
+  MomokaPostRequest,
+  MomokaQuoteRequest,
+  OnchainCommentRequest,
+  OnchainPostRequest,
+  OnchainQuoteRequest,
+  Quote
+} from '@lensshare/lens';
+import { ReferenceModuleType } from '@lensshare/lens';
+import checkDispatcherPermissions from '@lensshare/lib/checkDispatcherPermissions';
+import collectModuleParams from '@lensshare/lib/collectModuleParams';
+import getProfile from '@lensshare/lib/getProfile';
+import removeQuoteOn from '@lensshare/lib/removeQuoteOn';
+import type { IGif } from '@lensshare/types/giphy';
+import type { NewAttachment } from '@lensshare/types/misc';
+import { Button, Card, ErrorMessage, Spinner } from '@lensshare/ui';
+import cn from '@lensshare/ui/cn';
+import { $convertFromMarkdownString } from '@lexical/markdown';
+import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import errorToast from '@lib/errorToast';
+import { Leafwatch } from '@lib/leafwatch';
+import uploadToArweave from '@lib/uploadToArweave';
+import { useUnmountEffect } from 'framer-motion';
+import { $getRoot } from 'lexical';
+import dynamic from 'next/dynamic';
+import type { FC } from 'react';
+import { useEffect, useState } from 'react';
+import toast from 'react-hot-toast';
+import useCreatePoll from 'src/hooks/useCreatePoll';
+import useCreatePublication from 'src/hooks/useCreatePublication';
+import useHandleWrongNetwork from 'src/hooks/useHandleWrongNetwork';
+import usePublicationMetadata from 'src/hooks/usePublicationMetadata';
+
+
+import { useUpdateEffect } from 'usehooks-ts';
+import { NftOpenActionKit } from 'nft-openaction-kit';
+import LivestreamSettings from './Actions/LivestreamSettings';
+import LivestreamEditor from './Actions/LivestreamSettings/LivestreamEditor';
+import PollEditor from './Actions/PollSettings/PollEditor';
+import Editor from './Editor';
+import Discard from './Post/Discard';
+import LinkPreviews from './LinkPreviews';
+import getURLs from '@lensshare/lib/getURLs';
+import { VerifiedOpenActionModules } from '@lensshare/data/verified-openaction-modules';
+import { usePublicationStore } from 'src/store/non-persisted/usePublicationStore';
+import { useOpenActionStore } from 'src/store/non-persisted/useOpenActionStore';
+import { usePublicationAttributesStore } from 'src/store/non-persisted/usePublicationAttributesStore';
+import { useGlobalModalStateStore } from 'src/store/non-persisted/useGlobalModalStateStore';
+import { useNonceStore } from 'src/store/non-persisted/useNonceStore';
+import { useCollectModuleStore } from 'src/store/non-persisted/useCollectModuleStore';
+import { useReferenceModuleStore } from 'src/store/non-persisted/useReferenceModuleStore';
+import usePolymarket from 'src/hooks/usePolymarket';
+import MarketEditor from './Actions/OpenActionSettings/Config/Polymarket/MarketEditor';
+import { ADMIN_ADDRESS, HEY_REFERRAL_PROFILE_ID, KNOWN_ATTRIBUTES } from '@lensshare/data/constants';
+import OpenActionsPreviews from './OpenActionsPreviews';
+import { useAppStore } from 'src/store/persisted/useAppStore';
+import { MetadataAttributeType } from '@lens-protocol/metadata';
+import getMentions from '@lensshare/lib/getMentions';
+import buildEncodedPollData from '@lib/buildEncodedPollData';
+import PolymarketEditor from './Actions/PolymarketSettings/PolymarketEditor';
+
+const Attachment = dynamic(
+  () => import('@components/Composer/Actions/Attachment'),
+  {
+    loading: () => <div className="shimmer mb-1 h-5 w-5 rounded-lg" />
+  }
+);
+const Gif = dynamic(() => import('@components/Composer/Actions/Gif'), {
+  loading: () => <div className="shimmer mb-1 h-5 w-5 rounded-lg" />
+});
+const CollectSettings = dynamic(
+  () => import('@components/Composer/Actions/CollectSettings'),
+  {
+    loading: () => <div className="shimmer mb-1 h-5 w-5 rounded-lg" />
+  }
+);
+const ReferenceSettings = dynamic(
+  () => import('@components/Composer/Actions/ReferenceSettings'),
+  {
+    loading: () => <div className="shimmer mb-1 h-5 w-5 rounded-lg" />
+  }
+);
+const PollSettings = dynamic(
+  () => import('@components/Composer/Actions/PollSettings'),
+  {
+    loading: () => <div className="shimmer mb-1 h-5 w-5 rounded-lg" />
+  }
+);
+const PolymarketSettings = dynamic(
+  () => import('@components/Composer/Actions/PolymarketSettings'),
+  {
+    loading: () => <div className="shimmer mb-1 h-5 w-5 rounded-lg" />
+  }
+);
+const OpenActionSettings = dynamic(
+  () => import('@components/Composer/Actions/OpenActionSettings'),
+  {
+    loading: () => <div className="shimmer mb-1 h-5 w-5 rounded-lg" />
+  }
+);
+
+
+
+interface NewPublicationProps {
+  publication: MirrorablePublication;
+}
+
+const NewPublication: FC<NewPublicationProps> = ({ publication }) => {
+  const { currentProfile } = useAppStore();
+  const [showEmojiPicker, setShowEmojiPicker] = useState<boolean>(false);
+  // Global modal store
+  const { setShowDiscardModal, setShowNewPostModal } =
+    useGlobalModalStateStore();
+
+  // Nonce store
+  const { lensHubOnchainSigNonce } = useNonceStore();
+
+  // Publication store
+  const {
+    publicationContent,
+    quotedPublication,
+    setPublicationContent,
+    setQuotedPublication,
+    audioPublication,
+    attachments,
+    setAttachments,
+    addAttachments,
+    isUploading,
+    videoThumbnail,
+    setVideoThumbnail,
+    showPollEditor,
+    setShowPollEditor,
+    resetPollConfig,
+    pollConfig,
+    showMarketEditor,
+    setShowMarketEditor,
+    marketConfig,
+    resetMarketConfig,
+    showLiveVideoEditor,
+    setShowLiveVideoEditor,
+    resetLiveVideoConfig
+  } = usePublicationStore();
+
+  // Audio store
+
+  
+
+  // Collect module store
+  const { collectModule, reset: resetCollectSettings } = useCollectModuleStore(
+    (state) => state
+  );
+
+  // Open action store
+  const { openAction, reset: resetOpenActionSettings } = useOpenActionStore();
+
+  // Reference module store
+  const { degreesOfSeparation, onlyFollowers, selectedReferenceModule } =
+    useReferenceModuleStore();
+
+  // Attributes store
+  const { reset: resetAttributes } = usePublicationAttributesStore();
+
+  // States
+  const [isLoading, setIsLoading] = useState(false);
+  
+  const [publicationContentError, setPublicationContentError] = useState('');
+  const [nftOpenActionEmbed, setNftOpenActionEmbed] = useState();
+  const [exceededMentionsLimit, setExceededMentionsLimit] = useState(false);
+
+  const [editor] = useLexicalComposerContext();
+
+
+  const getMetadata = usePublicationMetadata();
+const handleWrongNetwork = useHandleWrongNetwork();
+ ;
+  const { isSponsored, canUseLensManager } =
+    checkDispatcherPermissions(currentProfile);
+
+  const isComment = Boolean(publication);
+  const isQuote = Boolean(quotedPublication);
+  const hasAudio = attachments[0]?.type === 'Audio';
+  const hasVideo = attachments[0]?.type === 'Video';
+
+  const noCollect = !collectModule.type;
+  const noOpenAction = !openAction && !showPollEditor;
+  // Use Momoka if the profile the comment or quote has momoka proof and also check collect module has been disabled
+  const useMomoka = isComment
+    ? publication?.momoka?.proof
+    : isQuote
+      ? quotedPublication?.momoka?.proof
+      : noCollect && noOpenAction;
+
+  const reset = () => {
+    editor.update(() => {
+      $getRoot().clear();
+    });
+
+    setPublicationContent('');
+    setShowPollEditor(false);
+    resetPollConfig();
+    setShowLiveVideoEditor(false);
+    resetLiveVideoConfig();
+    setAttachments([]);
+    setVideoThumbnail({
+      type: '',
+      uploading: false,
+      url: ''
+    });
+    resetAttributes();
+    resetOpenActionSettings();
+    resetCollectSettings();
+  };
+
+  const onError = (error?: any) => {
+    setIsLoading(false);
+    errorToast(error);
+  };
+
+  const onCompleted = (
+    __typename?:
+      | 'CreateMomokaPublicationResult'
+      | 'LensProfileManagerRelayError'
+      | 'RelayError'
+      | 'RelaySuccess'
+  ) => {
+    if (
+      __typename === 'RelayError' ||
+      __typename === 'LensProfileManagerRelayError'
+    ) {
+      return onError();
+    }
+
+    setIsLoading(false);
+    setQuotedPublication(null);
+    reset();
+
+    if (!isComment) {
+      setShowNewPostModal(false);
+    }
+
+    // Track in leafwatch
+    const eventProperties = {
+      comment_on: isComment ? publication?.id : null,
+      publication_collect_module: collectModule.type,
+      publication_has_attachments: attachments.length > 0,
+      publication_has_poll: showPollEditor,
+      publication_is_live: showLiveVideoEditor,
+      publication_open_action: openAction?.address,
+      publication_reference_module: selectedReferenceModule,
+      publication_reference_module_degrees_of_separation:
+        selectedReferenceModule ===
+        ReferenceModuleType.DegreesOfSeparationReferenceModule
+          ? degreesOfSeparation
+          : null,
+      quote_on: isQuote ? quotedPublication?.id : null
+    };
+    Leafwatch.track(
+      isComment
+        ? PUBLICATION.NEW_COMMENT
+        : isQuote
+          ? PUBLICATION.NEW_QUOTE
+          : PUBLICATION.NEW_POST,
+      eventProperties
+    );
+  };
+
+  const {
+    createCommentOnChain,
+    createCommentOnMomka,
+    createMomokaCommentTypedData,
+    createMomokaPostTypedData,
+    createMomokaQuoteTypedData,
+    createOnchainCommentTypedData,
+    createOnchainPostTypedData,
+    createOnchainQuoteTypedData,
+    createPostOnChain,
+    createPostOnMomka,
+    createQuoteOnChain,
+    createQuoteOnMomka,
+    error
+  } = useCreatePublication({
+    commentOn: publication,
+    onCompleted,
+    onError,
+    quoteOn: quotedPublication as Quote
+  });
+
+  useEffect(() => {
+    setPublicationContentError('');
+  }, [audioPublication]);
+
+  useEffect(() => {
+    if (getMentions(publicationContent).length > 50) {
+      setExceededMentionsLimit(true);
+      setPublicationContentError('You can only mention 50 people at a time!');
+    } else {
+      setExceededMentionsLimit(false);
+      setPublicationContentError('');
+    }
+  }, [publicationContent]);
+
+  useEffect(() => {
+    editor.update(() => {
+      $convertFromMarkdownString(publicationContent);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const getAnimationUrl = () => {
+    const fallback =
+      'ipfs://bafkreiaoua5s4iyg4gkfjzl6mzgenw4qw7mwgxj7zf7ev7gga72o5d3lf4';
+
+    const headers = {
+      'Access-Control-Allow-Origin': '*',
+    };
+
+    if (attachments.length > 0 || hasAudio || hasVideo) {
+      return attachments[0]?.uri || fallback;
+    }
+
+    return fallback;
+  };
+
+  const getTitlePrefix = () => {
+    if (hasVideo) {
+      return 'Video';
+    }
+
+    return isComment ? 'Comment' : isQuote ? 'Quote' : 'Post';
+  };
+
+  const createPublication = async () => {
+    if (!currentProfile) {
+      return toast.error(Errors.SignWallet);
+    }
+
+    if (handleWrongNetwork()) {
+      return;
+    }
+    
+
+    try {
+      setIsLoading(true);
+      if (hasAudio) {
+        setPublicationContentError('');
+        const parsedData = AudioPublicationSchema.safeParse(audioPublication);
+        if (!parsedData.success) {
+          const issue = parsedData.error.issues[0];
+          setIsLoading(false);
+          return setPublicationContentError(issue.message);
+        }
+      }
+
+      if (publicationContent.length === 0 && attachments.length === 0) {
+        setIsLoading(false);
+        return setPublicationContentError(
+          `${
+            isComment ? 'Comment' : isQuote ? 'Quote' : 'Post'
+          } should not be empty!`
+        );
+      }
+
+      setPublicationContentError('');
+
+      
+
+      const processedPublicationContent =
+        publicationContent.length > 0 ? publicationContent : undefined;
+      const title = hasAudio
+        ? audioPublication.title
+        : `${getTitlePrefix()} by ${getProfile(currentProfile).slugWithPrefix}`;
+      
+
+      const baseMetadata = {
+        content: processedPublicationContent,
+        marketplace: {
+          animation_url: getAnimationUrl(),
+          description: processedPublicationContent,
+          external_url: `https://mycrumbs.xyz${getProfile(currentProfile).link}`,
+          name: title
+        },
+        title
+      };
+     
+
+      const metadata = getMetadata({ baseMetadata });
+      const arweaveId = await uploadToArweave(metadata);
+
+      // Payload for the open action module
+      const openActionModules = [];
+
+      if (nftOpenActionEmbed) {
+        openActionModules.push(nftOpenActionEmbed);
+      }
+
+      if (showPollEditor) {
+        openActionModules.push({
+          unknownOpenAction: {
+            address: VerifiedOpenActionModules.Poll,
+            data: buildEncodedPollData(pollConfig)
+          }
+        });
+      }
+
+      if (Boolean(collectModule.type)) {
+        openActionModules.push({
+          collectOpenAction: collectModuleParams(collectModule, currentProfile)
+        });
+      }
+
+      if (Boolean(openAction)) {
+        openActionModules.push({ unknownOpenAction: openAction });
+      }
+
+      // Payload for the Momoka post/comment/quote
+      const momokaRequest:
+        | MomokaCommentRequest
+        | MomokaPostRequest
+        | MomokaQuoteRequest = {
+        ...(isComment && { commentOn: publication?.id }),
+        ...(isQuote && { quoteOn: quotedPublication?.id }),
+        contentURI: `ar://${arweaveId}`
+      };
+
+      if (useMomoka && !nftOpenActionEmbed) {
+        if (canUseLensManager) {
+          if (isComment) {
+            return await createCommentOnMomka(
+              momokaRequest as MomokaCommentRequest
+            );
+          }
+
+          if (isQuote) {
+            return await createQuoteOnMomka(
+              momokaRequest as MomokaQuoteRequest
+            );
+          }
+
+          return await createPostOnMomka(momokaRequest);
+        }
+
+        if (isComment) {
+          return await createMomokaCommentTypedData({
+            variables: { request: momokaRequest as MomokaCommentRequest }
+          });
+        }
+
+        if (isQuote) {
+          return await createMomokaQuoteTypedData({
+            variables: { request: momokaRequest as MomokaQuoteRequest }
+          });
+        }
+
+        return await createMomokaPostTypedData({
+          variables: { request: momokaRequest }
+        });
+      }
+
+      // Payload for the post/comment/quote
+      const onChainRequest:
+        | OnchainCommentRequest
+        | OnchainPostRequest
+        | OnchainQuoteRequest = {
+        contentURI: `ar://${arweaveId}`,
+        ...(isComment && { commentOn: publication?.id }),
+        ...(isQuote && { quoteOn: quotedPublication?.id }),
+        openActionModules,
+        ...(onlyFollowers && {
+          referenceModule:
+            selectedReferenceModule ===
+            ReferenceModuleType.FollowerOnlyReferenceModule
+              ? { followerOnlyReferenceModule: true }
+              : {
+                  degreesOfSeparationReferenceModule: {
+                    commentsRestricted: true,
+                    degreesOfSeparation,
+                    mirrorsRestricted: true,
+                    quotesRestricted: true
+                  }
+                }
+        })
+      };
+      console.log('onChainRequest', onChainRequest);
+
+      if (canUseLensManager) {
+        if (isComment) {
+          return await createCommentOnChain(
+            onChainRequest as OnchainCommentRequest
+          );
+        }
+
+        if (isQuote) {
+          return await createQuoteOnChain(
+            onChainRequest as OnchainQuoteRequest
+          );
+        }
+
+        return await createPostOnChain(onChainRequest);
+      }
+
+      if (isComment) {
+        return await createOnchainCommentTypedData({
+          variables: {
+            options: { overrideSigNonce: lensHubOnchainSigNonce },
+            request: onChainRequest as OnchainCommentRequest
+          }
+        });
+      }
+
+      if (isQuote) {
+        return await createOnchainQuoteTypedData({
+          variables: {
+            options: { overrideSigNonce: lensHubOnchainSigNonce },
+            request: onChainRequest as OnchainQuoteRequest
+          }
+        });
+      }
+
+      return await createOnchainPostTypedData({
+        variables: {
+          options: { overrideSigNonce: lensHubOnchainSigNonce },
+          request: onChainRequest
+        }
+      });
+    } catch (error) {
+      console.log('createPublication: error', error);
+      onError(error);
+    }
+  };
+
+  const setGifAttachment = (gif: IGif) => {
+    const attachment: NewAttachment = {
+      mimeType: 'image/gif',
+      previewUri: gif.images.original.url,
+      type: 'Image',
+      uri: gif.images.original.url
+    };
+    addAttachments([attachment]);
+  };
+
+  const isSubmitDisabledByPoll = showPollEditor
+    ? !pollConfig.options.length ||
+      pollConfig.options.some((option: string | any[]) => !option.length)
+    : false;
+
+  const onDiscardClick = () => {
+    setQuotedPublication(null);
+    setShowNewPostModal(false);
+    setShowDiscardModal(false);
+    reset();
+  };
+
+  useUnmountEffect(() => reset());
+
+  return (
+    <Card
+      className={cn({
+        '!rounded-b-xl !rounded-t-none border-none': !isComment
+      })}
+      onClick={() => setShowEmojiPicker(false)}
+    >
+      
+      {error ? (
+        <ErrorMessage
+          className="!rounded-none"
+          error={error}
+          title="Transaction failed!"
+        />
+      ) : null}
+      <Editor />
+      {publicationContentError ? (
+        <div className="mt-1 px-5 pb-3 text-sm font-bold text-red-500">
+          {publicationContentError}
+        </div>
+      ) : null}
+      {showPollEditor ? <PollEditor /> : null}
+      {showMarketEditor && ADMIN_ADDRESS ? <PolymarketEditor /> : null}
+      {showLiveVideoEditor ? <LivestreamEditor /> : null}
+      <OpenActionsPreviews setNftOpenActionEmbed={setNftOpenActionEmbed} />
+      {!nftOpenActionEmbed ? <LinkPreviews /> : null}
+      <NewAttachments attachments={attachments} />
+      {quotedPublication ? (
+        <Wrapper className="m-5" zeroPadding>
+          <QuotedPublication
+            isNew
+            publication={removeQuoteOn(quotedPublication as Quote)}
+          />
+        </Wrapper>
+      ) : null}
+      <div className="divider mx-5" />
+      <div className="block items-center px-5 py-3 sm:flex">
+        <div className="flex items-center space-x-4">
+          <Attachment />
+          <EmojiPicker
+            setEmoji={(emoji) => {
+              setShowEmojiPicker(false);
+              editor.update(() => {
+                // @ts-ignore
+                const index = editor?._editorState?._selection?.focus?.offset;
+                const updatedContent =
+                  publicationContent.substring(0, index) +
+                  emoji +
+                  publicationContent.substring(
+                    index,
+                    publicationContent.length
+                  );
+                $convertFromMarkdownString(updatedContent);
+              });
+            }}
+            setShowEmojiPicker={setShowEmojiPicker}
+            showEmojiPicker={showEmojiPicker}
+          />
+          <Gif setGifAttachment={(gif: IGif) => setGifAttachment(gif)} />
+          {!publication?.momoka?.proof ? (
+            <>
+              <CollectSettings />
+              <OpenActionSettings />
+              <ReferenceSettings />
+            </>
+          ) : null}
+          <PollSettings />
+          <PolymarketSettings />
+          {!isComment && <LivestreamSettings />}
+          
+        </div>
+        <div className="ml-auto mt-2 sm:mt-0">
+          <Button
+            disabled={
+              isLoading ||
+              isUploading ||
+              isSubmitDisabledByPoll ||
+              videoThumbnail.uploading ||
+              exceededMentionsLimit
+            }
+            onClick={createPublication}
+          >
+            {isComment ? 'Comment' : 'Post'}
+          </Button>
+        </div>
+      </div>
+      <Discard onDiscard={onDiscardClick} />
+    </Card>
+  );
+};
+
+export default withLexicalContext(NewPublication);
